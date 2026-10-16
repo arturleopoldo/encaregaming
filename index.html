@@ -270,7 +270,7 @@ footer{margin-top:56px;color:var(--muted);font-size:.8rem;border-top:1px solid v
 
   <section>
     <h2>Placar dos jogadores</h2>
-    <p class="sub">Clique no nome para ver o jogador em detalhe. K/D calculado pelo total de abates e mortes; ADR e KAST são médias por partida; V% é o winrate nas partidas que o jogador disputou.</p>
+    <p class="sub" id="boardsub">Clique no nome para ver o jogador em detalhe. K/D calculado pelo total de abates e mortes; ADR e KAST são médias por partida; V% é o winrate nas partidas que o jogador disputou.</p>
     <div class="card scroll" style="padding:4px 8px"><table id="board"></table></div>
   </section>
 
@@ -414,7 +414,20 @@ const avg=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:NaN;
 function matches(){
   if(period==="last10")return DATA.matches.slice(-10);
   return DATA.matches.filter(m=>period==="all"||m.mes===period);}
-function rows(){const ks=new Set(matches().map(m=>m.key));return DATA.players.filter(p=>ks.has(p.key));}
+/* linhas de jogador do período.
+   Em "Últimas 10", cada jogador entra com as SUAS 10 partidas mais recentes
+   (não as 10 últimas do time), para ninguém ser avaliado por menos jogos. */
+const POR_JOGADOR=10;
+function rows(){
+  if(period==="last10"){
+    const by={};
+    [...DATA.players].sort((a,b)=>b.m.seq-a.m.seq).forEach(p=>{
+      const l=by[p.nick]||(by[p.nick]=[]); if(l.length<POR_JOGADOR) l.push(p);});
+    return Object.values(by).flat().sort((a,b)=>a.m.seq-b.m.seq);
+  }
+  const ks=new Set(matches().map(m=>m.key));return DATA.players.filter(p=>ks.has(p.key));}
+/* partidas que aparecem nas linhas do período (no modo por jogador, a união delas) */
+function rowMatches(rs){return [...new Map(rs.map(r=>[r.key,r.m])).values()].sort((a,b)=>a.seq-b.seq);}
 const periodLabel=()=>period==="last10"?"Últimas 10 partidas":period==="all"?"Todas as partidas":mesLabel(period);
 
 function aggPlayers(){
@@ -493,6 +506,9 @@ function renderMaps(){
 
 const COLS=[["nick","Jogador"],["p","P"],["k","K"],["a","A"],["d","D"],["kd","K/D"],["adr","ADR"],["kast","KAST"],["mk","MK"],["fk","FK"],["rp","RP"],["wr","V%"]];
 function renderBoard(){
+  const bs=document.getElementById("boardsub");
+  if(!bs.dataset.base)bs.dataset.base=bs.textContent;
+  bs.textContent=bs.dataset.base+(period==="last10"?` Em "Últimas 10", cada jogador é avaliado pelas suas próprias ${POR_JOGADOR} partidas mais recentes.`:"");
   let arr=aggPlayers().filter(a=>showSub||isCore(a.nick));
   arr.sort((a,b)=>{const x=a[sortKey],y=b[sortKey];return typeof x==="string"?sortDir*x.localeCompare(y):sortDir*(x-y);});
   const tb=document.getElementById("board");
@@ -571,8 +587,8 @@ function chartOpts(plugins={}){
 
 const PAL=["#ffb02e","#5ad1ff","#39e6a0","#ff4d6d","#b78cff","#7ee0d0"];
 function renderRP(){
-  const ms=matches();const core=[...new Set(DATA.players.map(p=>p.nick))].filter(isCore);
-  const ds=core.filter(n=>rows().some(r=>r.nick===n)).map((n)=>{const i=core.indexOf(n);let s=0;const data=ms.map(m=>{const r=DATA.players.find(p=>p.key===m.key&&p.nick===n);if(!r)return null;s+=r.rp;return s;});
+  const rsRP=rows();const ms=period==="last10"?rowMatches(rsRP):matches();const core=[...new Set(DATA.players.map(p=>p.nick))].filter(isCore);
+  const ds=core.filter(n=>rows().some(r=>r.nick===n)).map((n)=>{const i=core.indexOf(n);let s=0;const data=ms.map(m=>{const r=rsRP.find(p=>p.key===m.key&&p.nick===n);if(!r)return null;s+=r.rp;return s;});
     return {label:nameText(n),data,borderColor:PAL[i%PAL.length],backgroundColor:PAL[i%PAL.length],borderWidth:n===selPlayer?3.5:1.8,pointRadius:0,spanGaps:true,tension:.25,
       borderColor:!selPlayer||n===selPlayer?PAL[i%PAL.length]:PAL[i%PAL.length]+"55"};});
   if(rpChart)rpChart.destroy();
@@ -641,8 +657,10 @@ function renderHL(){
   // ===== estilo HLTV =====
   const nicks=[...new Set(rs.map(r=>r.nick))];
   const H=nicks.map(n=>({nick:n,...hltvAgg(rs.filter(r=>r.nick===n))})).sort((a,b)=>b.rating-a.rating);
-  const mvp={};const byMatch={};rs.forEach(r=>(byMatch[r.key]=byMatch[r.key]||[]).push(r));
-  Object.values(byMatch).forEach(l=>{const b=l.reduce((x,y)=>y.rating>x.rating?y:x);mvp[b.nick]=(mvp[b.nick]||0)+1;});
+  // MVP de cada partida considera o time inteiro naquela partida; conta só se a partida está nas linhas do jogador no período
+  const mvp={};const byMatch={};const rsSet=new Set(rs.map(r=>r.key+"|"+r.nick));const rsKeys=new Set(rs.map(r=>r.key));
+  DATA.players.filter(p=>rsKeys.has(p.key)).forEach(r=>(byMatch[r.key]=byMatch[r.key]||[]).push(r));
+  Object.values(byMatch).forEach(l=>{const b=l.reduce((x,y)=>y.rating>x.rating?y:x);if(rsSet.has(b.key+"|"+b.nick))mvp[b.nick]=(mvp[b.nick]||0)+1;});
   H.forEach(h=>{h.mvp=mvp[h.nick]||0;const mine=rs.filter(r=>r.nick===h.nick).sort((a,b)=>a.m.seq-b.m.seq);const l5=mine.slice(-5);h.form=avg(l5.map(r=>r.rating));h.formD=h.form-h.rating;h.last5=l5;});
   const P=H.filter(h=>h.n>=minP);const star=P[0]||H[0];
   const bar=(lbl,v,max,fmt)=>`<div class="sbar"><span>${lbl}</span><div><i style="width:${Math.min(v/max*100,100)}%"></i></div><b class="num">${fmt(v)}</b></div>`;
